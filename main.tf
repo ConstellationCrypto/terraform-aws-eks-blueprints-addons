@@ -597,10 +597,11 @@ locals {
   aws_for_fluentbit_service_account   = try(var.aws_for_fluentbit.service_account_name, "aws-for-fluent-bit-sa")
   aws_for_fluentbit_cw_log_group_name = try(var.aws_for_fluentbit_cw_log_group.create, true) ? try(var.aws_for_fluentbit_cw_log_group.name, "/aws/eks/${var.cluster_name}/aws-fluentbit-logs") : ""
   aws_for_fluentbit_namespace         = try(var.aws_for_fluentbit.namespace, "kube-system")
+  aws_for_fluentbit_create_log_group  = try(var.aws_for_fluentbit_cw_log_group.create, true) && var.enable_aws_for_fluentbit
 }
 
 resource "aws_cloudwatch_log_group" "aws_for_fluentbit" {
-  count = try(var.aws_for_fluentbit_cw_log_group.create, true) && var.enable_aws_for_fluentbit ? 1 : 0
+  count = local.aws_for_fluentbit_create_log_group ? 1 : 0
 
   name              = try(var.aws_for_fluentbit_cw_log_group.use_name_prefix, true) ? null : local.aws_for_fluentbit_cw_log_group_name
   name_prefix       = try(var.aws_for_fluentbit_cw_log_group.use_name_prefix, true) ? try(var.aws_for_fluentbit_cw_log_group.name_prefix, "${local.aws_for_fluentbit_cw_log_group_name}-") : null
@@ -611,45 +612,37 @@ resource "aws_cloudwatch_log_group" "aws_for_fluentbit" {
 }
 
 data "aws_iam_policy_document" "aws_for_fluentbit" {
-  count = (try(var.aws_for_fluentbit_cw_log_group.create, true) || length(lookup(var.aws_for_fluentbit, "s3_bucket_arns", [])) > 0) && var.enable_aws_for_fluentbit ? 1 : 0
+  count = var.enable_aws_for_fluentbit ? 1 : 0
 
   source_policy_documents   = lookup(var.aws_for_fluentbit, "source_policy_documents", [])
   override_policy_documents = lookup(var.aws_for_fluentbit, "override_policy_documents", [])
 
-  dynamic "statement" {
-    for_each = try(var.aws_for_fluentbit_cw_log_group.create, true) ? [1] : []
+  statement {
+    sid    = "PutLogEvents"
+    effect = "Allow"
+    resources = [
+      "arn:${local.partition}:logs:${local.region}:${local.account_id}:log-group:${try(var.aws_for_fluentbit_cw_log_group.name, "*")}:log-stream:*",
+    ]
 
-    content {
-      sid    = "PutLogEvents"
-      effect = "Allow"
-      resources = [
-        "arn:${local.partition}:logs:${local.region}:${local.account_id}:log-group:${try(var.aws_for_fluentbit_cw_log_group.name, "*")}:log-stream:*",
-      ]
-
-      actions = [
-        "logs:PutLogEvents"
-      ]
-    }
+    actions = [
+      "logs:PutLogEvents"
+    ]
   }
 
-  dynamic "statement" {
-    for_each = try(var.aws_for_fluentbit_cw_log_group.create, true) ? [1] : []
+  statement {
+    sid    = "CreateCWLogs"
+    effect = "Allow"
+    resources = [
+      "arn:${local.partition}:logs:${local.region}:${local.account_id}:log-group:${try(var.aws_for_fluentbit_cw_log_group.name, "*")}:*",
+    ]
 
-    content {
-      sid    = "CreateCWLogs"
-      effect = "Allow"
-      resources = [
-        "arn:${local.partition}:logs:${local.region}:${local.account_id}:log-group:${try(var.aws_for_fluentbit_cw_log_group.name, "*")}:*",
-      ]
-
-      actions = [
-        "logs:CreateLogGroup",
-        "logs:CreateLogStream",
-        "logs:DescribeLogGroups",
-        "logs:DescribeLogStreams",
-        "logs:PutRetentionPolicy",
-      ]
-    }
+    actions = [
+      "logs:CreateLogGroup",
+      "logs:CreateLogStream",
+      "logs:DescribeLogGroups",
+      "logs:DescribeLogStreams",
+      "logs:PutRetentionPolicy",
+    ]
   }
 
   dynamic "statement" {
@@ -721,27 +714,28 @@ module "aws_for_fluentbit" {
     {
       name  = "serviceAccount.name"
       value = local.aws_for_fluentbit_service_account
-    },
-    {
-      name  = "cloudWatch.region"
-      value = local.region
-    },
-    {
-      name  = "cloudWatchLogs.logGroupName"
-      value = try(aws_cloudwatch_log_group.aws_for_fluentbit[0].name, local.aws_for_fluentbit_cw_log_group_name)
-    },
-    {
-      name  = "cloudWatchLogs.logGroupTemplate"
-      value = ""
-    },
-    {
-      name  = "cloudWatchLogs.autoCreateGroup"
-      value = false
-    },
-    {
-      name  = "cloudWatchLogs.region"
-      value = local.region
     }],
+    local.aws_for_fluentbit_create_log_group ? [
+      {
+        name  = "cloudWatch.region"
+        value = local.region
+      },
+      {
+        name  = "cloudWatchLogs.logGroupName"
+        value = try(aws_cloudwatch_log_group.aws_for_fluentbit[0].name, local.aws_for_fluentbit_cw_log_group_name)
+      },
+      {
+        name  = "cloudWatchLogs.logGroupTemplate"
+        value = ""
+      },
+      {
+        name  = "cloudWatchLogs.autoCreateGroup"
+        value = false
+      },
+      {
+        name  = "cloudWatchLogs.region"
+        value = local.region
+    }] : [],
     try(var.aws_for_fluentbit.set, [])
   )
   set_sensitive = try(var.aws_for_fluentbit.set_sensitive, [])
